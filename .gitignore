@@ -1,0 +1,6 @@
+__pycache__
+sim/__pycache__
+*.so
+*.o
+switch_[0-9]_out
+switch_[0-9]_err
