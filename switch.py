@@ -56,6 +56,16 @@ def main():
     table = { }
     broadcast_mac = bytes([0xff, 0xff, 0xff, 0xff, 0xff])
 
+    vlans = { }
+    with open("configs/switch" + switch_id + ".cfg") as file:
+        priority = int(file.readline())
+        for line in file:
+            interface_name, vlan_id = line.split()
+            try:
+                vlans[interface_name] = int(vlan_id)
+            except:
+                vlans[interface_name] = vlan_id
+
     while True:
         # Note that data is of type bytes([...]).
         # b1 = bytes([72, 101, 108, 108, 111])  # "Hello"
@@ -78,27 +88,39 @@ def main():
 
         print("Received frame of size {} on interface {}".format(length, interface), flush=True)
 
-        # TODO: Implement forwarding with learning
+        def send_appropriately(exit_interface):
+            aux = vlans[get_interface_name(exit_interface)]
+            if aux == vlan_id:
+                send_to_link(exit_interface, untagged_length, untagged_frame)
+            elif aux == "T":
+                send_to_link(exit_interface, tagged_length, tagged_frame)
+
+        if vlan_id == -1: # access port, host, no vlan tag
+            vlan_id = vlans[get_interface_name(interface)]
+            untagged_frame = data
+            untagged_length = length
+            tagged_frame = data[0:12] + create_vlan_tag(vlan_id) + data[12:]
+            tagged_length = length + 4
+        else: # trunk port, switch, vlan tag
+            untagged_frame = data[0:12] + data[16:]
+            untagged_length = length - 4
+            tagged_frame = data
+            tagged_length = length
+
         table[src_mac] = interface
 
         if dest_mac == broadcast_mac:
-            for port in interfaces:
-                if port != interface:
-                    send_to_link(port, length, data)
+            for exit_interface in interfaces:
+                if exit_interface != interface:
+                    send_appropriately(exit_interface)
         else:
             try:
-                port = table[dest_mac]
-                send_to_link(port, length, data)
+                exit_interface = table[dest_mac]
+                send_appropriately(exit_interface)
             except:
-                for port in interfaces:
-                    if port != interface:
-                        send_to_link(port, length, data)
-
-        # TODO: Implement VLAN support
-        # TODO: Implement STP support
-
-        # data is of type bytes.
-        # send_to_link(i, length, data)
+                for exit_interface in interfaces:
+                    if exit_interface != interface:
+                        send_appropriately(exit_interface)
 
 if __name__ == "__main__":
     main()

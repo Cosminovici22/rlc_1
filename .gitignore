@@ -4,3 +4,4 @@ sim/__pycache__
 *.o
 switch_[0-9]_out
 switch_[0-9]_err
+hosts_output
