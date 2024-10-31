@@ -327,6 +327,7 @@ class FullNM(object):
 
         time.sleep(info.TIMEOUT)
         self.teardown_capture(testname, log)
+        time.sleep(info.TIMEOUT)
 
         results = {}
         for hp in range(len(self.hosts)):

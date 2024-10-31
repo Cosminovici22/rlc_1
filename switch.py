@@ -1,6 +1,6 @@
 #!/usr/bin/python3
+
 import sys
-import struct
 import wrapper
 import threading
 import time
@@ -8,8 +8,7 @@ from wrapper import recv_from_any_link, send_to_link, get_switch_mac, get_interf
 
 def parse_ethernet_header(data):
     # Unpack the header fields from the byte array
-    #dest_mac, src_mac, ethertype = struct.unpack('!6s6sH', data[:14])
-    dest_mac = data[0:6]
+    dest_mac = data[:6]
     src_mac = data[6:12]
     
     # Extract ethertype. Under 802.1Q, this may be the bytes from the VLAN TAG
@@ -24,103 +23,168 @@ def parse_ethernet_header(data):
 
     return dest_mac, src_mac, ether_type, vlan_id
 
+def parse_config_bpdu(data):
+    src_root_bid = int.from_bytes(data[21:29], byteorder='big')
+    src_root_path_cost = int.from_bytes(data[29:33], byteorder='big')
+    src_bid = int.from_bytes(data[33:], byteorder='big')
+
+    return src_root_bid, src_root_path_cost, src_bid
+
 def create_vlan_tag(vlan_id):
     # 0x8100 for the Ethertype for 802.1Q
     # vlan_id & 0x0FFF ensures that only the last 12 bits are used
-    return struct.pack('!H', 0x8200) + struct.pack('!H', vlan_id & 0x0FFF)
+    return b'\x82\x00' + (vlan_id & 0x0FFF).to_bytes(2, 'big')
 
-def send_bdpu_every_sec():
+def create_bpdu(bid, root_bid, root_path_cost):
+    # Custom configuration BPDU containing only information necessary for this implementation
+    return (b'\x01\x80\xC2\x00\x00\x00'
+            + get_switch_mac() 
+            + b'\x00\x1b' # 27
+            + b'\x42\x42\x03'
+            + b'\x00\x00\x00\x00'
+            + root_bid.to_bytes(8, 'big')
+            + root_path_cost.to_bytes(4, 'big')
+            + bid.to_bytes(8, 'big'))
+
+def send_bpdu_every_sec():
+    bpdu = create_bpdu(bid, bid, 0)
     while True:
-        # TODO Send BDPU every second if necessary
+        if bid == root_bid:
+            for interface in interfaces:
+                if vlan_ids[get_interface_name(interface)] == 'T':
+                    send_to_link(interface, len(bpdu), bpdu)
         time.sleep(1)
 
 def main():
-    # init returns the max interface number. Our interfaces
-    # are 0, 1, 2, ..., init_ret value + 1
-    switch_id = sys.argv[1]
+    # These must be accessed by send_bpdu_every_sec() in a separate thread, so they are global
+    global bid, root_bid, interfaces, vlan_ids, is_blocking
 
+    switch_id = sys.argv[1]
     num_interfaces = wrapper.init(sys.argv[2:])
     interfaces = range(0, num_interfaces)
 
-    print("# Starting switch with id {}".format(switch_id), flush=True)
-    print("[INFO] Switch MAC", ':'.join(f'{b:02x}' for b in get_switch_mac()))
+    print('# Starting switch with id {}'.format(switch_id), flush=True)
+    print('[INFO] Switch MAC', ':'.join(f'{b:02x}' for b in get_switch_mac()))
 
-    # Create and start a new thread that deals with sending BDPU
-    t = threading.Thread(target=send_bdpu_every_sec)
+    # Parse switch configuration files in a dictionary
+    vlan_ids = {}
+    with open('configs/switch' + switch_id + '.cfg') as file:
+        priority = int(file.readline())
+        for line in file:
+            interface_name, vlan_id = line.split()
+            try:
+                vlan_ids[interface_name] = int(vlan_id)
+            except:
+                vlan_ids[interface_name] = vlan_id
+
+    bid = priority
+    root_bid = bid
+    root_path_cost = 0
+    root_interface = -1
+
+    # Create and start a new thread that deals with sending BPDUs
+    t = threading.Thread(target=send_bpdu_every_sec)
     t.start()
 
     # Printing interface names
     for i in interfaces:
         print(get_interface_name(i))
 
-    table = { }
-    broadcast_mac = bytes([0xff, 0xff, 0xff, 0xff, 0xff])
-
-    vlans = { }
-    with open("configs/switch" + switch_id + ".cfg") as file:
-        priority = int(file.readline())
-        for line in file:
-            interface_name, vlan_id = line.split()
-            try:
-                vlans[interface_name] = int(vlan_id)
-            except:
-                vlans[interface_name] = vlan_id
+    mac_table = {}
+    is_blocking = [False] * num_interfaces
 
     while True:
-        # Note that data is of type bytes([...]).
-        # b1 = bytes([72, 101, 108, 108, 111])  # "Hello"
-        # b2 = bytes([32, 87, 111, 114, 108, 100])  # " World"
-        # b3 = b1[0:2] + b[3:4].
-        interface, data, length = recv_from_any_link()
-
+        src_interface, data, length = recv_from_any_link()
         dest_mac, src_mac, ethertype, vlan_id = parse_ethernet_header(data)
 
-        # Print the MAC src and MAC dst in human readable format
-        dest_mac = ':'.join(f'{b:02x}' for b in dest_mac)
-        src_mac = ':'.join(f'{b:02x}' for b in src_mac)
+        # Print the source and destination MAC addresses in human readable format
+        print('Destination MAC: {}'.format(':'.join(f'{b:02x}' for b in dest_mac)))
+        print('Source MAC: {}'.format(':'.join(f'{b:02x}' for b in src_mac)))
+        print('EtherType: {}'.format(ethertype))
+        print('Received frame of size {} on interface {}'.format(length, src_interface), flush=True)
 
-        # Note. Adding a VLAN tag can be as easy as
-        # tagged_frame = data[0:12] + create_vlan_tag(10) + data[12:]
+        # Check whether the received data is an STP frame and act accordingly
+        if dest_mac == b'\x01\x80\xC2\x00\x00\x00':
+            src_root_bid, src_root_path_cost, src_bid = parse_config_bpdu(data)
 
-        print(f'Destination MAC: {dest_mac}')
-        print(f'Source MAC: {src_mac}')
-        print(f'EtherType: {ethertype}')
+            if src_root_bid < root_bid:
+                # If the root BID reported by an incoming BPDU is replacing this switch's root BID
+                # as its own, toggle all other ports to blocking except the new root port
+                if root_bid == bid:
+                    for interface in interfaces:
+                        if vlan_ids[get_interface_name(interface)] == 'T':
+                            is_blocking[interface] = True
+                is_blocking[src_interface] = False
 
-        print("Received frame of size {} on interface {}".format(length, interface), flush=True)
+                root_bid = src_root_bid
+                root_path_cost = src_root_path_cost + 10
+                root_interface = src_interface
 
-        def send_appropriately(exit_interface):
-            aux = vlans[get_interface_name(exit_interface)]
-            if aux == vlan_id:
-                send_to_link(exit_interface, untagged_length, untagged_frame)
-            elif aux == "T":
-                send_to_link(exit_interface, tagged_length, tagged_frame)
+                # Forward knowledge of new root BID to neighboring switches
+                bpdu = create_bpdu(bid, root_bid, root_path_cost)
+                for interface in interfaces:
+                    if src_interface != interface and vlan_ids[get_interface_name(interface)] == 'T':
+                        send_to_link(interface, len(bpdu), bpdu)
 
-        if vlan_id == -1: # access port, host, no vlan tag
-            vlan_id = vlans[get_interface_name(interface)]
+            elif src_root_bid == root_bid:
+                # Check whether the path to the root bridge can be optimised
+                if src_interface == root_interface:
+                    root_path_cost = min(root_path_cost, src_root_path_cost + 10)
+                elif src_root_path_cost > root_path_cost or src_bid > bid:
+                    # Tiebreakers
+                    is_blocking[src_interface] = False
+
+            # Block ports on which this switch's BPDUs may circle back
+            elif src_bid == bid:
+                is_blocking[src_interface] = True
+
+            # Discard other BPDUs
+            else:
+                continue
+
+            # If this switch continues to be the root bridge following the previous checks, toggle
+            # all of its ports to listening
+            if bid == root_bid:
+                for interface in interfaces:
+                    is_blocking[interface] = False
+
+            continue
+
+        if is_blocking[src_interface]:
+            continue
+
+        # Build tagged and untagged frames depending on the presence of the VLAN tag
+        if vlan_id == -1:
+            vlan_id = vlan_ids[get_interface_name(src_interface)]
             untagged_frame = data
             untagged_length = length
-            tagged_frame = data[0:12] + create_vlan_tag(vlan_id) + data[12:]
+            tagged_frame = data[:12] + create_vlan_tag(vlan_id) + data[12:]
             tagged_length = length + 4
-        else: # trunk port, switch, vlan tag
-            untagged_frame = data[0:12] + data[16:]
+        else:
+            untagged_frame = data[:12] + data[16:]
             untagged_length = length - 4
             tagged_frame = data
             tagged_length = length
 
-        table[src_mac] = interface
+        # Correspond the source MAC address with the port on which the frame is received
+        mac_table[src_mac] = src_interface
+        try:
+            interface = mac_table[dest_mac] # This throws an exception if no entry exists
+            if interface != src_interface and not is_blocking[interface]:
+                interface_name = get_interface_name(interface)
+                if vlan_ids[interface_name] == vlan_id:
+                    send_to_link(interface, untagged_length, untagged_frame)
+                elif vlan_ids[interface_name] == 'T':
+                    send_to_link(interface, tagged_length, tagged_frame)
+        except:
+            # Broadcast addresses are also handled here, since they are never added to the MAC table
+            for interface in interfaces:
+                if interface != src_interface and not is_blocking[interface]:
+                    interface_name = get_interface_name(interface)
+                    if vlan_ids[interface_name] == vlan_id:
+                        send_to_link(interface, untagged_length, untagged_frame)
+                    elif vlan_ids[interface_name] == 'T':
+                        send_to_link(interface, tagged_length, tagged_frame)
 
-        if dest_mac == broadcast_mac:
-            for exit_interface in interfaces:
-                if exit_interface != interface:
-                    send_appropriately(exit_interface)
-        else:
-            try:
-                exit_interface = table[dest_mac]
-                send_appropriately(exit_interface)
-            except:
-                for exit_interface in interfaces:
-                    if exit_interface != interface:
-                        send_appropriately(exit_interface)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

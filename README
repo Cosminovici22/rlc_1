@@ -1,0 +1,46 @@
+1 2 3
+
+Implementarea incepe prin initializarea variabilelor si structurilor de date
+necesare. Variabilele globale declarate la inceput trebuie accesate de thread-ul
+ce executa functia send_bpdu_every_sec(). Configuratia switch-ului este citita
+din fisierul corespunzator swtich ID-ului oferit ca argument script-ului.
+Configuratia VLAN-urilor este memorata intr-un dictionar pentru access rapid.
+Asemenea se procedeaza si in cazul tabelei MAC - se foloseste un dictionar
+pentru a asocia adresele MAC sursa a cadrelor cu port-urile pe care acestea au
+ajuns la switch. Se tine evidenta port-urilor blocate intr-o lista de valori
+booleene; initial, aceasta lista are toate valorile `False`.
+
+Atunci cand se primeste un cadru, se verifica daca adresa destinatie a acestuia
+este adresa multicast STP. In caz afirmativ, se efectueaza o serie de verificari
+detaliate in cele ce urmeaza pentru a determina daca BPDU-ul primit contine
+informatii utile.
+
+Initial, se verifica daca cadrul primit indica un alt root bridge decat cel
+cunoscut de switch-ul curent. In acest caz, se preia noul root BID, se
+actualizeaza root port, se recalculeaza costul drumului pana la root bridge si
+se transmite mai departe aceasta informatie. In plus, se deschid treptat
+port-urile catre bridge-urile de la care s-au primit BPDU-uri.
+
+Daca cadrul primit indica catre acelasi root bridge ca switch-ul curent, atunci
+fie bridge-ul de la care s-a primit BPDU-ul a gasit o cale mai buna catre root
+bridge, fie trebuie realizat un tiebreaker pentru a decide portul designated pe
+conexiunea portului pe care a fost primit BPDU-ul.
+
+Altfel, daca la switch-ul curent a ajuns inapoi un cadru propriu, atunci portul
+pe care a ajuns acest cadru formeaza o bucla si trebuie inchis.
+
+In final, cadrul este aruncat daca nu confirma una din verificarile anterioare.
+Se continua prin a trata cadre ethernet standard. Daca portul pe care a venit
+cadrul este blocat, atunci cadrul se arunca.
+
+In baza prezentei unui VLAN tag in cadrul primit, se construiesc apoi cadre
+untagged si tagged pentru a fi trimse in mod corespunzator pe eventualele access
+port-uri, respectiv trunk port-uri. Apoi, se realizeaza comutarea standard a
+cadrelor tinand cont de VLAN-uri. Se actualizeaza table MAC asociind adresei MAC
+sursa portul pe care a ajuns cadrul la switch-ul curent. Se cauta portul
+corespunzator adresei MAC destinatie a cadrului in tabela MAC, iar daca este
+gasita o intrare, cadrul este trimis unicast pe portul gasit. Altfel cadrul este
+trimis pe toate port-urile care fac parte din VLAN-ul pe care a venit cadrul. In
+transmiterea cadrelor, se tine cont de asemenea si de starea portului (blocat
+sau nu), precum si de tipul portului (se transmite cadrul tagged doar pe trunk
+port-uri si cadrul untagged doar pe access port-uri).
