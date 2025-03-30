@@ -1,4 +1,4 @@
-Implementarea switch-ului se regaseste in fisierul `switch.py`.
+1 2 3
 
 Implementarea incepe prin initializarea variabilelor si structurilor de date
 necesare. Variabilele globale declarate la inceput trebuie accesate de thread-ul
